@@ -5,7 +5,7 @@ from src.models import ForecastRun,ForecastPoint,Observation
 from src.config.queue import queue,QUEUE_NAME
 from src.utils.serializers import serialize
 from .series_service import get_series
-from .forecast_algorithm import forecast
+from .forecast_algorithm import forecast_observations,GAP_POLICIES
 
 def get_run(db,run_id):
     run=db.get(ForecastRun,run_id)
@@ -32,9 +32,13 @@ def compute(db,run_id):
     if run.status=='completed': return
     run.status='running'; db.commit()
     observations=list(db.scalars(select(Observation).where(Observation.series_id==run.series_id).order_by(Observation.day)))
-    if any((b.day-a.day).days!=1 for a,b in zip(observations,observations[1:])):
-        raise ValueError('序列日期不连续，请补齐缺失日再预测')
-    result=forecast([x.value for x in observations],run.horizon,run.season)
+    if not observations: raise ValueError('观测不足：至少42天且不少于3个季节周期')
+    if run.gap_policy not in GAP_POLICIES: raise ValueError('不支持的缺口策略')
+    # The run's input snapshot is persisted in result; later observations never rewrite it.
+    result=forecast_observations(
+        [(x.day,x.value) for x in observations],
+        run.horizon,run.season,run.gap_policy,
+    )
     db.execute(delete(ForecastPoint).where(ForecastPoint.run_id==run_id))
     for i,point in enumerate(result.pop('points'),1):
         db.add(ForecastPoint(run_id=run_id,day=observations[-1].day+timedelta(days=i),**point))

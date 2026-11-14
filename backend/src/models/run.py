@@ -9,6 +9,7 @@ class ForecastRun(Base):
     series_id:Mapped[int]=mapped_column(ForeignKey('series.id'))
     horizon:Mapped[int]=mapped_column(default=14)
     season:Mapped[int]=mapped_column(default=7)
+    gap_policy:Mapped[str]=mapped_column(String(20),default='strict')
     status:Mapped[str]=mapped_column(String(20),default='queued')
     result:Mapped[dict]=mapped_column(JSON,default=dict)
     error:Mapped[str|None]=mapped_column(String(500),nullable=True)

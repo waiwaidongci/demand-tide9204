@@ -23,7 +23,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 ## 一天的工作剧本
 
 1. 08:00 分析师登录，检查 `tide-demand-2026.csv` 的杭州·日配玫瑰 180 天观测。
-2. 08:05 在序列台账检查近 42 天变化；缺失日期会阻止预测。
+2. 08:05 在序列台账检查近 42 天变化；缺失日期按任务所选策略处理：严格拒绝即失败，同周补缺则用此前最近的同星期实测值。
 3. 08:10 创建“下周日配 · 杭州玫瑰”，预测 14 天、季节周期 7 天。
 4. Redis 入队，由独立 Python worker 执行逐日回测，页面自动刷新状态。
 5. 比较季节朴素法与 α=0.2/0.5/0.8 指数平滑的 MAE、WAPE。
@@ -33,9 +33,11 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 ## 计算口径
 
-`backend/src/services/forecast_algorithm.py` 是独立可复算 Python 算法。输入为连续日需求非负有限序列、horizon 1–30、season 2–30。至少 42 天且不少于 3 个季节。固定种子 42..47 的 seed 生成 6 条、每条 180 天的观测，合计 1080 条。
+`backend/src/services/forecast_algorithm.py` 是独立可复算 Python 算法。输入为按日记录的非负有限需求、horizon 1–30、season 2–30。至少 42 个连续日历日且不少于 3 个季节。
 
-滚动验证留出最近 min(28,n//3) 天。第 i 天只使用 values[:i]，季节朴素预测为 y[i-season]；指数平滑 l[t]=αy[t]+(1−α)l[t−1]。按回测 MAE 最小者选择候选。WAPE=sum(abs(error))/sum(actual)，分母为 0 返回 null。未来多步用递推值，区间为点预测加验证残差的经验 10%/90% 分位并限制非负。分位带可能整体偏离有偏的点预测，不强制包含点估计。区间覆盖率没有保证，未建模节假日和长期趋势。结果记录输入和 checksum、训练天数、验证天数。短序列、负值、非有限值、日期缺口均失败，前端保留错误并引导重建任务。
+缺口策略在创建任务时选择并固化到 `forecast_runs.gap_policy`：`strict` 遇到任何缺失日期直接失败并列出起始日与缺失天数；`same_weekday` 用该日之前最近的同星期实测需求补值。补值只读取当时已存在的记录，绝不使用更晚观测或其他补值；找不到同星期来源、连续缺失超过 7 天、连续日历跨度不足 42 天或实测天数不足 42 天时失败并说明原因。真实零值按实测保留，不视为缺失。固定种子 42..47 的 seed 生成 6 条、每条 180 天的观测，合计 1080 条。
+
+滚动验证在连续日历时间轴上留出最近 min(28,n//3) 天。第 i 天只使用此前输入，季节朴素预测为 y[i-season]；指数平滑 l[t]=αy[t]+(1−α)l[t−1]。补值进入模型历史以保证递推连续，但不作为回测真值：误差只在留出窗口的实测日上计算，四个候选使用同一组有效日期，不足 7 个有效日则失败。按回测 MAE 最小者选择候选。WAPE=sum(abs(error))/sum(actual)，分母为 0 返回 null。未来多步用递推值，区间为点预测加验证残差的经验 10%/90% 分位并限制非负。分位带可能整体偏离有偏的点预测，不强制包含点估计。区间覆盖率没有保证，未建模节假日和长期趋势。结果记录逐日输入快照（实测/补值、来源日期）、checksum、训练与验证天数、有效验证天数。任务完成后快照冻结，迟到数据补齐后新任务使用实测，原结果不变。短序列、负值、非有限值、严格策略下的日期缺口均失败，前端保留错误并引导重建任务。结果页与 CSV 导出逐日区分实测和补值并列出补值来源日期。
 
 ## 技术与结构
 
@@ -46,6 +48,8 @@ docker compose exec -T backend python -m scripts.seed_demo
 | 持久化 | MySQL 8.0；外键与自然唯一键 |
 | 队列 | Redis 7；独立 worker 心跳 |
 | 入口 | Nginx 1.27；/api/ 剥离后代理后端 |
+
+数据库结构以模型为单一来源，`create_all` 不会给既有表补列；已有部署升级请执行 `backend/migrations/002_gap_policy.md` 中的 `ALTER TABLE`。
 
 `frontend/src/{api,stores,types,components/common,hooks,pages,router,utils,constants}`；`backend/src/{routes,controllers,services,models,schemas,middlewares,utils,constants,config}`；种子在 `backend/scripts/seed_demo.py`，结构版本说明在 `backend/migrations/`。测试、截图与真实执行报告位于批次根目录 `test-artifacts/gb-0004/`，源码中不存放测试产物。
 
